@@ -6,9 +6,6 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 readonly SOURCE_USER_JS="$SCRIPT_DIR/user.js"
 
-MOZILLA_DIR="${MOZILLA_DIR:-$HOME/.mozilla/firefox}"
-readonly PROFILES_INI="$MOZILLA_DIR/profiles.ini"
-
 DRY_RUN=0
 TARGET_NAME=""
 
@@ -21,11 +18,16 @@ Usage: install.sh [-p <profile-name>] [-n] [-h]
   -h          show this help
 
 Environment:
-  MOZILLA_DIR   Firefox profile root (default: ~/.mozilla/firefox)
+  MOZILLA_DIR   Explicit Firefox profile root (must contain profiles.ini)
+
+Otherwise, detects profiles.ini in:
+  ${XDG_CONFIG_HOME:-$HOME/.config}/mozilla/firefox
+  $HOME/.mozilla/firefox
+If both exist, set MOZILLA_DIR to select one.
 
 Links user.js from this repo into every registered Firefox profile.
 Firefox follows symlinks and reads user.js only at startup, so changes
-flow through on the next restart after `git pull` — no re-run needed.
+flow through on the next restart after `git pull`. No re-run is needed.
 EOF
   exit "${1:-1}"
 }
@@ -40,9 +42,40 @@ while getopts ":p:nh" opt; do
   esac
 done
 
-[[ -n "$HOME" ]]           || { echo "error: HOME is not set" >&2; exit 1; }
+[[ -n "${HOME:-}" ]]       || { echo "error: HOME is not set" >&2; exit 1; }
 [[ -f "$SOURCE_USER_JS" ]] || { echo "error: source not found: $SOURCE_USER_JS" >&2; exit 1; }
-[[ -f "$PROFILES_INI" ]]   || { echo "error: $PROFILES_INI not found — is Firefox installed and has it been run once?" >&2; exit 1; }
+
+if [[ "${MOZILLA_DIR+x}" ]]; then
+  [[ -n "$MOZILLA_DIR" ]] || { echo "error: MOZILLA_DIR is set but empty" >&2; exit 1; }
+else
+  PROFILE_ROOTS=("${XDG_CONFIG_HOME:-$HOME/.config}/mozilla/firefox" "$HOME/.mozilla/firefox")
+  MATCHING_ROOTS=()
+  for root in "${PROFILE_ROOTS[@]}"; do
+    if [[ -f "$root/profiles.ini" ]]; then
+      MATCHING_ROOTS+=("$root")
+    fi
+  done
+
+  case ${#MATCHING_ROOTS[@]} in
+    0)
+      echo "error: profiles.ini not found in either location:" >&2
+      printf '  %s/profiles.ini\n' "${PROFILE_ROOTS[@]}" >&2
+      echo "Run Firefox once to create a profile, or set MOZILLA_DIR to the directory containing profiles.ini." >&2
+      exit 1
+      ;;
+    1) MOZILLA_DIR="${MATCHING_ROOTS[0]}" ;;
+    *)
+      echo "error: multiple Firefox profile registries found:" >&2
+      printf '  %s/profiles.ini\n' "${MATCHING_ROOTS[@]}" >&2
+      echo "Set MOZILLA_DIR to the profile root you want to use." >&2
+      exit 1
+      ;;
+  esac
+fi
+
+readonly MOZILLA_DIR
+readonly PROFILES_INI="$MOZILLA_DIR/profiles.ini"
+[[ -f "$PROFILES_INI" ]] || { echo "error: $PROFILES_INI not found. Check MOZILLA_DIR." >&2; exit 1; }
 
 # Collect registered profiles from [ProfileN] sections.
 # Each record: <name>\t<isrelative>\t<path>
@@ -87,7 +120,7 @@ link_one() {
   fi
 
   if [[ ! -d "$profile_dir" ]]; then
-    echo "warn: profile '$name' dir missing on disk: $profile_dir — skipping" >&2
+    echo "warn: profile '$name' directory missing on disk: $profile_dir - skipping" >&2
     return 0
   fi
 
